@@ -51,27 +51,31 @@ class AI:
                 return 'U', {'frontier': self.frontier, 'visited': self.visited}
             
         current_cell = self.position
-        cell_type = percepts['X'][0]
 
         self.visited.add(current_cell)
 
         self.update_frontier(percepts)
 
-        if cell_type.isdigit() and not self.goal_found:
+        # If at a goal cell and hasn't used it yet, executes 'U' command
+        if percepts['X'][0].isdigit() and not self.goal_found:
             self.goal_found = True
-            return ('U', {'frontier': self.frontier, 'visited': self.visited})
+            return 'U', {'frontier': self.frontier, 'visited': self.visited}
 
         next_move = self.find_next_move(percepts)
 
         print(f"A received the message: {msg}")
 
+        # If a move is found, shares only the new frontier cells
         if next_move:
-            # Sends updated frontier and visited cells to the other agent
-            return next_move, {'frontier': self.frontier, 'visited': self.visited}
+            unexplored_frontier = [cell for cell in self.frontier if cell not in self.visited]
+            return next_move, {'frontier': unexplored_frontier, 'visited': self.visited}
     
         # Random movement as a last resort
-        return random.choice(['N', 'S', 'E', 'W']), "A moving"
-    
+        valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
+        if valid_moves:
+            return random.choice(valid_moves), {'frontier': self.frontier, 'visited': self.visited}
+        # Default move if no other option
+        return 'N', {'frontier': self.frontier, 'visited': self.visited}
         
     def update_frontier(self, percepts):
         # Direction changes as changes in row and column indices
@@ -83,25 +87,26 @@ class AI:
             col = self.position[1] + direction[1]
 
             # Checks if the cell is not a wall and hasn't been visited
-            if percepts[key][0] not in ('w',) and (row, col) not in self.visited:
+            if percepts[key][0] != 'w' and (row, col) not in self.visited:
                 # If the cell is not already in the frontier, adds it to the list
                 if (row, col) not in self.frontier:
                     self.frontier.append((row, col))
 
     def find_next_move(self, percepts):
 
-        if not self.frontier:
-            return 'N'  # Default move if there is no frontier
+        # Removes any already-visited cells from the frontier
+        self.frontier = [cell for cell in self.frontier if cell not in self.visited]
 
-        # Selects the nearest frontier cell using A* search
-        nearest_frontier = self.a_star_search(self.position, self.frontier)
-        
-        if nearest_frontier:
-            return nearest_frontier
+        if self.frontier:
+            # Select the nearest frontier cell using A* search
+            direction = self.a_star_search(self.position, self.frontier)
+            if direction:
+                return direction
 
         # Default random move if A* fails
-        return 'N'
-    
+        valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
+        return random.choice(valid_moves) if valid_moves else 'N'
+
     def a_star_search(self, start, frontier):
 
         # Priority queue that keeps track of cells to explore, ordered by their priority 
@@ -110,7 +115,7 @@ class AI:
         # Dictionary that maps each cell to the cell from which it was reached
         previous_location = {start: None}
         # Dictionary that stores the total cost to reach each cell from the starting cell
-        cost_so_far = {start: None}
+        cost_so_far = {start: 0}
 
         # While there are nodes to explore
         while open_set:
