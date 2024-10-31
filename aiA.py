@@ -17,9 +17,14 @@ class AI:
         self.visited = set() # Tracks visited cells
         self.frontier = [] # Frontier of seen but not yet explored cells
         self.position = (0,0) # Initializes starting position
-        self.goal_found = False
+        self.goal_found = 0
         self.turn = -1
-
+        self.max_turns = max_turns
+        self.goals_collected = 0
+        self.total_goals_estimate = 0
+        self.exit_found = False
+        self.exit_position = None
+        self.teleports = {}
 
     def update(self, percepts, msg):
         """
@@ -46,37 +51,71 @@ class AI:
         The same goes for goal hexes (0, 1, 2, 3, 4, 5, 6, 7, 8, 9).
         """
         self.turn += 1
-        match percepts['X'][0]:
-            case '0' | '1' | 'r' | 'b':
-                return 'U', {'frontier': self.frontier, 'visited': self.visited}
-            
-        current_cell = self.position
-
-        self.visited.add(current_cell)
-
-        self.update_frontier(percepts)
-
-        # If at a goal cell and hasn't used it yet, executes 'U' command
-        if percepts['X'][0].isdigit() and not self.goal_found:
-            self.goal_found = True
-            return 'U', {'frontier': self.frontier, 'visited': self.visited}
-
-        next_move = self.find_next_move(percepts)
+        turns_left = self.max_turns - self.turn
 
         print(f"A received the message: {msg}")
 
-        # If a move is found, shares only the new frontier cells
+        """
+        match percepts['X'][0]:
+            case '0' | '1' | 'r' | 'b':
+                return 'U', {'frontier': self.frontier, 'visited': self.visited}
+        """
+        if msg:
+            if msg.get('exit_position') and not self.exit_found:
+                self.exit_position = msg['exit_position']
+                self.exit_found = True
+            self.teleports.update(msg.get('teleports', {}))
+            self.frontier += msg.get('frontier', [])
+            self.visited.update(msg.get('visited', set()))
+
+        current_cell = self.position
+        self.visited.add(current_cell)
+
+        cell_type = percepts['X'][0]
+        self.detect_important_cells(percepts)
+
+        # If at a goal cell and hasn't used it yet, executes 'U' command
+        if cell_type.isdigit():
+            self.goals_collected += 1
+            return 'U', self.create_message()
+
+        # Uses exit if all goals are collected or time is short
+        if cell_type == 'r' and (self.goals_collected >= self.total_goals_estimate or turns_left < self.max_turns * 0.2):
+                return 'U', self.create_message()
+
+        if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left):
+            return 'U', self.create_message()
+
+        self.update_frontier(percepts)
+
+        # Moves toward remaining goals if there are uncollected goals
+        if self.goals_collected < self.goal_found and self.frontier:
+            next_move = self.find_next_move(percepts)
+        else:
+            next_move = self.move_toward(percepts, turns_left)
+
+        # Updates position and return chosen move
         if next_move:
-            unexplored_frontier = [cell for cell in self.frontier if cell not in self.visited]
-            return next_move, {'frontier': unexplored_frontier, 'visited': self.visited}
+            self.update_position(next_move)
+            return next_move, self.create_message()
     
         # Random movement as a last resort
         valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
         if valid_moves:
-            return random.choice(valid_moves), {'frontier': self.frontier, 'visited': self.visited}
+            return random.choice(valid_moves), self.create_message()
         # Default move if no other option
         return 'N', {'frontier': self.frontier, 'visited': self.visited}
-        
+
+    def create_message(self):
+        return {
+            'frontier': [cell for cell in self.frontier if cell not in self.visited],
+            'visited': self.visited,
+            'exit_position': self.exit_position,
+            'teleports': self.teleports,
+            'goals_collected': self.goals_collected,  # Share goals collected
+            'total_goals_estimate': self.total_goals_estimate,  # Share total goals estimate
+        }
+
     def update_frontier(self, percepts):
         # Direction changes as changes in row and column indices
         directions = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
@@ -92,6 +131,17 @@ class AI:
                 if (row, col) not in self.frontier:
                     self.frontier.append((row, col))
 
+    def detect_important_cells(self, percepts):
+        # Detects goals, teleports, and exit in percepts
+        for direction, data in percepts.items():
+            if data[0] == 'r':  # Found exit
+                self.exit_found = True
+                self.exit_position = self.get_new_position(direction)
+            elif data[0] in ('b', 'y', 'o', 'p'):  # Found teleport
+                self.teleports[data[0]] = self.get_new_position(direction)
+            elif data[0].isdigit():  # Found a goal
+                self.goal_found += 1
+
     def find_next_move(self, percepts):
 
         # Removes any already-visited cells from the frontier
@@ -106,6 +156,17 @@ class AI:
         # Default random move if A* fails
         valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
         return random.choice(valid_moves) if valid_moves else 'N'
+
+    def should_use_teleport(self, turns_left):
+        # Determines if agent should use teleport (if turns are low or some other condition??)
+        return turns_left < self.max_turns * 0.3 or len(self.frontier) > 15
+
+    def move_toward(self, percepts, turns_left):
+        if self.exit_found and turns_left < self.max_turns * 0.2:
+            return self.a_star_search(self.position, [self.exit_position])
+        elif self.frontier:
+            return self.find_next_move(percepts)
+        return None
 
     def a_star_search(self, start, frontier):
 
@@ -163,8 +224,19 @@ class AI:
 
         return 'N'  # Default direction if no path
 
-    def manhattan_distance(self, cell, frontier):
+    def manhattan_distance(self, cell, target_positions):
         # Calculates the number of steps needed to reach one cell from another
         # then returns the smallest distance among the calculated distances to all cells
-        return min(abs(cell[0] - f[0]) + abs(cell[1] - f[1]) for f in frontier)
-            
+        return min(abs(cell[0] - target[0]) + abs(cell[1] - target[1]) for target in target_positions)
+
+    def update_position(self, move):
+        movement = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
+        if move in movement:
+            self.position = (self.position[0] + movement[move][0], self.position[1] + movement[move][1])
+
+    #  Calculates a new position based on a move without modifying the original
+    def get_new_position(self, move):
+        movement = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
+        if move in movement:
+            return self.position[0] + movement[move][0], self.position[1] + movement[move][1]
+        return self.position

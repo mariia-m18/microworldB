@@ -14,10 +14,15 @@ import heapq
 class AI:
     def __init__(self, max_turns):
         self.turn = -1
-        self.visited = set() # Tracks visited cells
-        self.frontier = [] # Frontier of seen but not yet explored cells
-        self.position = (0,0) # Initializes starting position
-        self.goal_found = False
+        self.max_turns = max_turns
+        self.visited = set()
+        self.frontier = []
+        self.position = (0, 0)
+        self.exit_found = False
+        self.exit_position = None
+        self.teleports = {}
+        self.agent_a_goals_collected = 0  # Tracks goals collected by Agent A
+        self.total_goals_estimate = 0  # Estimate of total goals, updated via messages
 
     def update(self, percepts, msg):
         """
@@ -44,38 +49,65 @@ class AI:
         The same goes for goal hexes (0, 1, 2, 3, 4, 5, 6, 7, 8, 9).
         """
         self.turn += 1
+        turns_left = self.max_turns - self.turn
 
+        """
         match percepts['X'][0]:
             case '0' | '1' | 'r' | 'b':
                 return 'U', {'frontier': self.frontier, 'visited': self.visited}
+        """
+        # Handles incoming messages from Agent A, with focus on exit and teleports
+        if msg:
+            if msg.get('exit_position') and not self.exit_found:
+                self.exit_position = msg['exit_position']  # High priority for exit
+                self.exit_found = True
+            self.teleports.update(msg.get('teleports', {}))
+            self.frontier += msg.get('frontier', [])
+            self.visited.update(msg.get('visited', set()))
+            # Tracks goals collected by Agent A
+            self.agent_a_goals_collected = msg.get('goals_collected', self.agent_a_goals_collected)
+            # Updates the total goal estimate if available from Agent A
+            self.total_goals_estimate = msg.get('total_goals_estimate', self.total_goals_estimate)
 
         current_cell = self.position
-
-        if msg:
-            self.frontier = list(set(self.frontier + msg.get('frontier', [])))
-            self.visited = self.visited.union(msg.get('visited', set()))
-
         self.visited.add(current_cell)
+
+        cell_type = percepts['X'][0]
+        self.detect_important_cells(percepts)
+
+        # If exit is reached and Agent A has collected goals or time is short, use the exit
+        if cell_type == 'r' and (self.agent_a_goals_collected >= self.total_goals_estimate or turns_left < self.max_turns * 0.2):
+            return 'U', self.create_message()
+
+        if cell_type.isdigit() and self.agent_a_goals_collected < self.total_goals_estimate:
+            return 'U', self.create_message()
+
+        if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left):
+            return 'U', self.create_message()
+
         self.update_frontier(percepts)
-
-        # Checks for goals and use them
-        if percepts['X'][0].isdigit() and not self.goal_found:
-            self.goal_found = True
-            return 'U', {'frontier': self.frontier, 'visited': self.visited}
-        
-        next_move = self.find_next_move(percepts)
-
         print(f"B received the message: {msg}")
 
-        # If next move is determined, share unexplored frontier cells
+        # If exit is known and Agent A’s goals are collected, head directly to the exit
+        next_move = self.move_toward(percepts, turns_left) if self.exit_found else self.find_next_move(percepts)
+
         if next_move:
-            unexplored_frontier = [cell for cell in self.frontier if cell not in self.visited]
-            return next_move, {'frontier': unexplored_frontier, 'visited': self.visited}
+            self.update_position(next_move)
+            return next_move, self.create_message()
 
         # Random fallback move, prioritizing different directions for diversity
         valid_moves = [d for d in ['E', 'W', 'N', 'S'] if percepts[d][0] != 'w']
         return random.choice(valid_moves) if valid_moves else 'E'
-    
+
+    def detect_important_cells(self, percepts):
+        # Focuses only on detecting teleports and exit
+        for direction, data in percepts.items():
+            if data[0] == 'r' and not self.exit_found:
+                self.exit_found = True
+                self.exit_position = self.get_new_position(direction)
+            elif data[0] in ('b', 'y', 'o', 'p'):  # Found teleport
+                self.teleports[data[0]] = self.get_new_position(direction)
+
     def update_frontier(self, percepts):
 
         # Direction changes as changes in row and column indices
@@ -92,6 +124,19 @@ class AI:
                 if (row, col) not in self.frontier:
                     self.frontier.append((row, col))
 
+    def create_message(self):
+        return {
+            'frontier': [cell for cell in self.frontier if cell not in self.visited],
+            'visited': self.visited,
+            'exit_position': self.exit_position,
+            'teleports': self.teleports,
+            'goals_collected': self.agent_a_goals_collected,  # Informs Agent A of goals collected
+            'total_goals_estimate': self.total_goals_estimate,  # Inform Agent A of the goal estimate
+        }
+
+    def should_use_teleport(self, turns_left):
+        return turns_left < self.max_turns * 0.3 or len(self.frontier) > 10
+
     def find_next_move(self, percepts):
 
         # Removes any already-visited cells from the frontier
@@ -106,7 +151,14 @@ class AI:
         # Default random move if A* fails, prioritezes east west exploration
         valid_moves = [d for d in ['E', 'W', 'N', 'S'] if percepts[d][0] != 'w']
         return random.choice(valid_moves) if valid_moves else 'E'
-    
+
+    def move_toward(self, percepts, turns_left):
+        if self.exit_found and turns_left < self.max_turns * 0.2:
+            return self.a_star_search(self.position, [self.exit_position])
+        elif self.frontier:
+            return self.find_next_move(percepts)
+        return None
+
     def a_star_search(self, start, frontier):
 
         # Priority queue that keeps track of cells to explore, ordered by their priority 
@@ -163,8 +215,18 @@ class AI:
         
         return 'E'  # Different default direction for Agent B
 
-    def manhattan_distance(self, cell, frontier):
+    def manhattan_distance(self, cell, target_positions):
         # Calculates the number of steps needed to reach one cell from another
         # then returns the smallest distance among the calculated distances to all cells
-        return min(abs(cell[0] - f[0]) + abs(cell[1] - f[1]) for f in frontier)
-            
+        return min(abs(cell[0] - target[0]) + abs(cell[1] - target[1]) for target in target_positions)
+
+    def update_position(self, move):
+        movement = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
+        if move in movement:
+            self.position = (self.position[0] + movement[move][0], self.position[1] + movement[move][1])
+
+    def get_new_position(self, move):
+        movement = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
+        if move in movement:
+            return self.position[0] + movement[move][0], self.position[1] + movement[move][1]
+        return self.position
