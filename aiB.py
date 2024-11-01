@@ -23,6 +23,8 @@ class AI:
         self.teleports = {}
         self.agent_a_goals_collected = 0  # Tracks goals collected by Agent A
         self.total_goals_estimate = 0  # Estimate of total goals, updated via messages
+        self.last_teleport_used = None
+        self.teleport_pairs = {'o': 'b', 'b': 'o', 'y': 'p', 'p': 'y'}
 
     def update(self, percepts, msg):
         """
@@ -82,14 +84,21 @@ class AI:
         if cell_type.isdigit() and self.agent_a_goals_collected < self.total_goals_estimate:
             return 'U', self.create_message()
 
-        if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left):
+        if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left, cell_type):
+            self.last_teleport_used = cell_type
             return 'U', self.create_message()
 
         self.update_frontier(percepts)
         print(f"B received the message: {msg}")
 
         # If exit is known and Agent A’s goals are collected, head directly to the exit
-        next_move = self.move_toward(percepts, turns_left) if self.exit_found else self.find_next_move(percepts)
+        # next_move = self.move_toward(percepts, turns_left) if self.exit_found else self.find_next_move(percepts)
+
+        # Head directly to the exit if it’s known and all goals are collected by Agent A
+        if self.exit_found and self.agent_a_goals_collected >= self.total_goals_estimate:
+            next_move = self.move_toward(percepts)
+        else:
+            next_move = self.find_next_move(percepts)
 
         if next_move:
             self.update_position(next_move)
@@ -134,8 +143,10 @@ class AI:
             'total_goals_estimate': self.total_goals_estimate,  # Inform Agent A of the goal estimate
         }
 
-    def should_use_teleport(self, turns_left):
-        return turns_left < self.max_turns * 0.3 or len(self.frontier) > 10
+    def should_use_teleport(self, turns_left, teleport_type):
+        # Avoids reusing the last teleport pair immediately to prevent teleport loops
+        last_paired_teleport = self.teleport_pairs.get(self.last_teleport_used)
+        return teleport_type != self.last_teleport_used and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 10)
 
     def find_next_move(self, percepts):
 
@@ -152,12 +163,15 @@ class AI:
         valid_moves = [d for d in ['E', 'W', 'N', 'S'] if percepts[d][0] != 'w']
         return random.choice(valid_moves) if valid_moves else 'E'
 
-    def move_toward(self, percepts, turns_left):
+    def move_toward(self, percepts):
+        return self.a_star_search(self.position, [self.exit_position]) if self.exit_found else None
+        """
         if self.exit_found and turns_left < self.max_turns * 0.2:
             return self.a_star_search(self.position, [self.exit_position])
         elif self.frontier:
             return self.find_next_move(percepts)
         return None
+        """
 
     def a_star_search(self, start, frontier):
 

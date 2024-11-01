@@ -25,6 +25,10 @@ class AI:
         self.exit_found = False
         self.exit_position = None
         self.teleports = {}
+        self.last_teleport_used = None  # Tracks the last teleport used to avoid looping
+
+        # Teleport pairs to prevent back-and-forth loops
+        self.teleport_pairs = {'o': 'b', 'b': 'o', 'y': 'p', 'p': 'y'}
 
     def update(self, percepts, msg):
         """
@@ -53,8 +57,6 @@ class AI:
         self.turn += 1
         turns_left = self.max_turns - self.turn
 
-        print(f"A received the message: {msg}")
-
         """
         match percepts['X'][0]:
             case '0' | '1' | 'r' | 'b':
@@ -68,22 +70,26 @@ class AI:
             self.frontier += msg.get('frontier', [])
             self.visited.update(msg.get('visited', set()))
 
+        print(f"A received the message: {msg}")
+
         current_cell = self.position
         self.visited.add(current_cell)
 
         cell_type = percepts['X'][0]
         self.detect_important_cells(percepts)
 
-        # If at a goal cell and hasn't used it yet, executes 'U' command
+        # Collects goal if on a goal cell
         if cell_type.isdigit():
             self.goals_collected += 1
             return 'U', self.create_message()
 
         # Uses exit if all goals are collected or time is short
         if cell_type == 'r' and (self.goals_collected >= self.total_goals_estimate or turns_left < self.max_turns * 0.2):
-                return 'U', self.create_message()
+            return 'U', self.create_message()
 
-        if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left):
+        # Uses teleport if beneficial for repositioning and avoids repeated usage
+        if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left, cell_type):
+            self.last_teleport_used = cell_type
             return 'U', self.create_message()
 
         self.update_frontier(percepts)
@@ -101,10 +107,8 @@ class AI:
     
         # Random movement as a last resort
         valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
-        if valid_moves:
-            return random.choice(valid_moves), self.create_message()
         # Default move if no other option
-        return 'N', {'frontier': self.frontier, 'visited': self.visited}
+        return random.choice(valid_moves) if valid_moves else 'N', self.create_message()
 
     def create_message(self):
         return {
@@ -157,9 +161,10 @@ class AI:
         valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
         return random.choice(valid_moves) if valid_moves else 'N'
 
-    def should_use_teleport(self, turns_left):
-        # Determines if agent should use teleport (if turns are low or some other condition??)
-        return turns_left < self.max_turns * 0.3 or len(self.frontier) > 15
+    def should_use_teleport(self, turns_left, teleport_type):
+        # Avoids reusing the last teleport pair immediately to prevent teleport loops
+        last_paired_teleport = self.teleport_pairs.get(self.last_teleport_used)
+        return teleport_type != self.last_teleport_used and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 15)
 
     def move_toward(self, percepts, turns_left):
         if self.exit_found and turns_left < self.max_turns * 0.2:
