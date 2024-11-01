@@ -15,7 +15,7 @@ class AI:
     def __init__(self, max_turns):
 
         self.visited = set() # Tracks visited cells
-        self.frontier = [] # Frontier of seen but not yet explored cells
+        self.frontier = set() # Frontier of seen but not yet explored cells
         self.position = (0,0) # Initializes starting position
         self.goal_found = 0
         self.turn = -1
@@ -26,7 +26,8 @@ class AI:
         self.exit_position = None
         self.teleports = {}
         self.last_teleport_used = None  # Tracks the last teleport used to avoid looping
-
+        self.last_teleport_timer = 0  # Tracks the turns since the last teleport use
+        self.teleport_cooldown = 5  # Number of turns before allowing reuse of the last teleport
         # Teleport pairs to prevent back-and-forth loops
         self.teleport_pairs = {'o': 'b', 'b': 'o', 'y': 'p', 'p': 'y'}
 
@@ -56,6 +57,7 @@ class AI:
         """
         self.turn += 1
         turns_left = self.max_turns - self.turn
+        self.last_teleport_timer += 1
 
         """
         match percepts['X'][0]:
@@ -67,13 +69,14 @@ class AI:
                 self.exit_position = msg['exit_position']
                 self.exit_found = True
             self.teleports.update(msg.get('teleports', {}))
-            self.frontier += msg.get('frontier', [])
-            self.visited.update(msg.get('visited', set()))
+            self.frontier.update(set(msg.get('frontier', [])))
+            self.visited.update(set(msg.get('visited', [])))
 
         print(f"A received the message: {msg}")
 
         current_cell = self.position
         self.visited.add(current_cell)
+        self.frontier.discard(current_cell)  # Removes from frontier once visited
 
         cell_type = percepts['X'][0]
         self.detect_important_cells(percepts)
@@ -90,6 +93,7 @@ class AI:
         # Uses teleport if beneficial for repositioning and avoids repeated usage
         if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left, cell_type):
             self.last_teleport_used = cell_type
+            self.last_teleport_timer = 0
             return 'U', self.create_message()
 
         self.update_frontier(percepts)
@@ -111,8 +115,10 @@ class AI:
         return random.choice(valid_moves) if valid_moves else 'N', self.create_message()
 
     def create_message(self):
+        print("Type of frontier:", type(self.frontier))
+        print("Type of visited:", type(self.visited))
         return {
-            'frontier': [cell for cell in self.frontier if cell not in self.visited],
+            'frontier': self.frontier - self.visited,
             'visited': self.visited,
             'exit_position': self.exit_position,
             'teleports': self.teleports,
@@ -133,7 +139,7 @@ class AI:
             if percepts[key][0] != 'w' and (row, col) not in self.visited:
                 # If the cell is not already in the frontier, adds it to the list
                 if (row, col) not in self.frontier:
-                    self.frontier.append((row, col))
+                    self.frontier.add((row, col))
 
     def detect_important_cells(self, percepts):
         # Detects goals, teleports, and exit in percepts
@@ -149,7 +155,7 @@ class AI:
     def find_next_move(self, percepts):
 
         # Removes any already-visited cells from the frontier
-        self.frontier = [cell for cell in self.frontier if cell not in self.visited]
+        self.frontier -= self.visited
 
         if self.frontier:
             # Select the nearest frontier cell using A* search
@@ -164,7 +170,7 @@ class AI:
     def should_use_teleport(self, turns_left, teleport_type):
         # Avoids reusing the last teleport pair immediately to prevent teleport loops
         last_paired_teleport = self.teleport_pairs.get(self.last_teleport_used)
-        return teleport_type != self.last_teleport_used and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 15)
+        return (teleport_type != self.last_teleport_used or self.last_teleport_timer >= self.teleport_cooldown) and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 15)
 
     def move_toward(self, percepts, turns_left):
         if self.exit_found and turns_left < self.max_turns * 0.2:

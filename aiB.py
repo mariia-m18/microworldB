@@ -16,7 +16,7 @@ class AI:
         self.turn = -1
         self.max_turns = max_turns
         self.visited = set()
-        self.frontier = []
+        self.frontier = set()
         self.position = (0, 0)
         self.exit_found = False
         self.exit_position = None
@@ -24,6 +24,8 @@ class AI:
         self.agent_a_goals_collected = 0  # Tracks goals collected by Agent A
         self.total_goals_estimate = 0  # Estimate of total goals, updated via messages
         self.last_teleport_used = None
+        self.last_teleport_timer = 0  # Tracks the turns since the last teleport use
+        self.teleport_cooldown = 5  # Number of turns before allowing reuse of the last teleport
         self.teleport_pairs = {'o': 'b', 'b': 'o', 'y': 'p', 'p': 'y'}
 
     def update(self, percepts, msg):
@@ -51,6 +53,7 @@ class AI:
         The same goes for goal hexes (0, 1, 2, 3, 4, 5, 6, 7, 8, 9).
         """
         self.turn += 1
+        self.last_teleport_timer += 1
         turns_left = self.max_turns - self.turn
 
         """
@@ -64,8 +67,8 @@ class AI:
                 self.exit_position = msg['exit_position']  # High priority for exit
                 self.exit_found = True
             self.teleports.update(msg.get('teleports', {}))
-            self.frontier += msg.get('frontier', [])
-            self.visited.update(msg.get('visited', set()))
+            self.frontier.update(set(msg.get('frontier', [])))
+            self.visited.update(set(msg.get('visited', [])))
             # Tracks goals collected by Agent A
             self.agent_a_goals_collected = msg.get('goals_collected', self.agent_a_goals_collected)
             # Updates the total goal estimate if available from Agent A
@@ -73,6 +76,7 @@ class AI:
 
         current_cell = self.position
         self.visited.add(current_cell)
+        self.frontier.discard(current_cell)
 
         cell_type = percepts['X'][0]
         self.detect_important_cells(percepts)
@@ -86,6 +90,7 @@ class AI:
 
         if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left, cell_type):
             self.last_teleport_used = cell_type
+            self.last_teleport_timer = 0  # Resets timer on teleport use
             return 'U', self.create_message()
 
         self.update_frontier(percepts)
@@ -131,11 +136,11 @@ class AI:
             if percepts[key][0] != 'w' and (row, col) not in self.visited:
                 # If the cell is not already in the frontier, adds it to the list
                 if (row, col) not in self.frontier:
-                    self.frontier.append((row, col))
+                    self.frontier.add((row, col))
 
     def create_message(self):
         return {
-            'frontier': [cell for cell in self.frontier if cell not in self.visited],
+            'frontier': self.frontier - self.visited,
             'visited': self.visited,
             'exit_position': self.exit_position,
             'teleports': self.teleports,
@@ -145,13 +150,14 @@ class AI:
 
     def should_use_teleport(self, turns_left, teleport_type):
         # Avoids reusing the last teleport pair immediately to prevent teleport loops
+        # but allows reuse if enough turns have passed since last use
         last_paired_teleport = self.teleport_pairs.get(self.last_teleport_used)
-        return teleport_type != self.last_teleport_used and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 10)
+        return (teleport_type != self.last_teleport_used or self.last_teleport_timer >= self.teleport_cooldown) and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 10)
 
     def find_next_move(self, percepts):
 
         # Removes any already-visited cells from the frontier
-        self.frontier = [cell for cell in self.frontier if cell not in self.visited]
+        self.frontier -= self.visited
 
         if self.frontier:
             # Uses A* search to find path to nearest frontier

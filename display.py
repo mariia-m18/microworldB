@@ -2,7 +2,7 @@ import pygame
 
 class Display:
     def __init__(self, the_world, agent_xA, agent_yA, agent_xB, agent_yB):
-        self.cell_size = 30
+        self.cell_size = 20
         self.screen_w = self.cell_size * the_world.get_width()
         self.screen_h = self.cell_size * the_world.get_height()
         self.cells_w = self.screen_w // self.cell_size
