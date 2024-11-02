@@ -1,12 +1,36 @@
-# NAME(S): [PLACE YOUR NAME(S) HERE]
-#
-# APPROACH: [WRITE AN OVERVIEW OF YOUR APPROACH HERE.]
-#     Please use multiple lines (< ~80-100 char) for you approach write-up.
-#     Keep it readable. In other words, don't write
-#     the whole damned thing on one super long line.
-#
-#     In-code comments DO NOT count as a description of
-#     of your approach.
+# NAME(S): Mariia Maksymenko, Caleb Thurston
+# We wish to have the same grade for this project!
+# APPROACH:
+# Our goals for both Agents A and B were efficient exploration and goal collection,
+# staying in the maze for a reasonable amount of time (until 20-30% of the max turns are left),
+# efficient exit search, avoiding teleport loops, efficient communication between agents,
+# and finally avoiding visiting the same cells repeteadly. Our Agent A was primarily 
+# responsible for collecting goals, and ultimately navigating towards the exit once all known 
+# goals were collected or the turn limit was approaching, or also if it knew the exit was really
+# far from it. Both agents maintained a frontier set together, which represented cells that were seen but 
+# not yet visited. Both of them also used a sort of A* pathfinding algorithm to navigate towards the 
+# nearest frontier cell or the exit when necessary, and only move randomly if absolutely necessary.
+# Agent A kept track of seen goals and collected goals. If it stepped on a goal cell, it would collect
+# it immediately. It was also used to communicate to B how many goals are in an area, and whether they 
+# should keep exploring it together, or move on. Both agents have a teleport cooldown mechanism to 
+# avoid getting stuck in teleport loops, making it so a minimum number of turns passed before reusing 
+# the same teleport pair. To avoid oscillations between adjacent cells or loops in general, both agents 
+# stored their recent moves and we tried to make it so they avoid repeating the same movement pattern, 
+# but it wasn't succesful, and we aren't sure why. Agent B's role was focusing more on navigating towards 
+# the exit while supporting exploration by notifying A of goals when possible. When the exit is located, 
+# Agent B would wait in the vicinity or head towards it while keeping track of Agent A's progress in goal 
+# collection. Agent B is supposed to ignore whether A collected all the goals if there are little turns left,
+# so at least one of the agents can actually exit and get a score. Agent B differed in the fact that it was 
+# encouraged to use teleports way more often, so it can explore more cells and not focus on a single area.
+# For data structures, we used a lot of sets, as they offer the benfit of being unable to store duplicates,
+# and also some dictionaries, so we can make pairs of teleports, coordinates, cell types, etc. As for our
+# implememntation of A*, we implemented a priority queue using Python's heapq that keeps track of cells to 
+# explore, ordered by their priority. The priority was calculated by combining the path cost so far and the 
+# heuristic estimate to the goal. We had a dictionary which tracks each cell and its parent node, and is used 
+# to reconstruct the final path once the goal is reached. The agents use Manhattan distance as the heuristic
+# because of the restriction of movement to the horizontal and vertical directions. Overall I believe we have
+# a good foundation for this project, but we encountered bugs that we weren't sure how to fix, and I do think
+# we tried to overfit it to some maps as was mentioned in class.
 
 import random
 import heapq
@@ -25,11 +49,12 @@ class AI:
         self.teleports = {}
         self.last_teleport_used = None  # Tracks the last teleport used to avoid looping
         self.last_teleport_timer = 0  # Tracks the turns since the last teleport use
-        self.teleport_cooldown = 5  # Number of turns before allowing reuse of the last teleport
+        self.teleport_cooldown = 3  # Number of turns before allowing reuse of the last teleport
         # Teleport pairs to prevent back-and-forth loops
         self.teleport_pairs = {'o': 'b', 'b': 'o', 'y': 'p', 'p': 'y'}
         self.seen_goals = set() # Tracks all seen goals, a set because we don't want duplicates
         self.collected_goals = set()
+        self.recent_moves = []  # Store recent moves to avoid jittering
 
     def update(self, percepts, msg):
         """
@@ -121,10 +146,16 @@ class AI:
             self.update_position(next_move)
             return next_move, self.create_message()
     
-        # Random movement as a last resort
-        valid_moves = [d for d in ['N', 'S', 'E', 'W'] if percepts[d][0] != 'w']
-        # Default move if no other option
-        return random.choice(valid_moves) if valid_moves else 'N', self.create_message()
+        valid_moves = [d for d in ['E', 'W', 'N', 'S'] if percepts[d][0] != 'w' and self.get_new_position(d) not in self.recent_moves]
+        if valid_moves:
+            next_move = random.choice(valid_moves)
+            self.update_recent_moves(next_move)
+            return next_move, self.create_message()
+
+        # If no valid move that avoids jittering, just picks a move
+        next_move = 'N'  # Default move
+        self.update_recent_moves(next_move)
+        return next_move, self.create_message()
 
     def create_message(self):
         return {
@@ -183,7 +214,7 @@ class AI:
     def should_use_teleport(self, turns_left, teleport_type):
         # Avoids reusing the last teleport pair immediately to prevent teleport loops
         last_paired_teleport = self.teleport_pairs.get(self.last_teleport_used)
-        return (teleport_type != self.last_teleport_used or self.last_teleport_timer >= self.teleport_cooldown) and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 15)
+        return (teleport_type != self.last_teleport_used or self.last_teleport_timer >= self.teleport_cooldown) and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.6 or len(self.frontier) < 5)
 
     def is_valid_move(self, move, percepts):
         return move in percepts and percepts[move][0] != 'w'
@@ -255,6 +286,12 @@ class AI:
         # Calculates the number of steps needed to reach one cell from another
         # then returns the smallest distance among the calculated distances to all cells
         return min(abs(cell[0] - target[0]) + abs(cell[1] - target[1]) for target in target_positions)
+
+    def update_recent_moves(self, move):
+        new_position = self.get_new_position(move)
+        self.recent_moves.append(new_position)
+        if len(self.recent_moves) > 4:  # Keeps track of the last 4 moves
+            self.recent_moves.pop(0)
 
     def update_position(self, move):
         movement = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
