@@ -21,8 +21,8 @@ class AI:
         self.exit_found = False
         self.exit_position = None
         self.teleports = {}
-        self.agent_a_goals_collected = 0  # Tracks goals collected by Agent A
-        self.total_goals_estimate = 0  # Estimate of total goals, updated via messages
+        self.seen_goals = set()  # Set to track all seen goals
+        self.collected_goals = set()  # Set to track collected goals
         self.last_teleport_used = None
         self.last_teleport_timer = 0  # Tracks the turns since the last teleport use
         self.teleport_cooldown = 5  # Number of turns before allowing reuse of the last teleport
@@ -69,10 +69,10 @@ class AI:
             self.teleports.update(msg.get('teleports', {}))
             self.frontier.update(set(msg.get('frontier', [])))
             self.visited.update(set(msg.get('visited', [])))
-            # Tracks goals collected by Agent A
-            self.agent_a_goals_collected = msg.get('goals_collected', self.agent_a_goals_collected)
-            # Updates the total goal estimate if available from Agent A
-            self.total_goals_estimate = msg.get('total_goals_estimate', self.total_goals_estimate)
+            # Adds new seen goals from Agent A's message
+            self.seen_goals.update(set(msg.get('new_goals', [])))
+            # Adds collected goals from Agent A
+            self.collected_goals.update(set(msg.get('collected_goals', [])))
 
         current_cell = self.position
         self.visited.add(current_cell)
@@ -81,11 +81,11 @@ class AI:
         cell_type = percepts['X'][0]
         self.detect_important_cells(percepts)
 
-        # If exit is reached and Agent A has collected goals or time is short, use the exit
-        if cell_type == 'r' and (self.agent_a_goals_collected >= self.total_goals_estimate or turns_left < self.max_turns * 0.2):
+        # If exit is reached and Agent A has collected goals or time is short, uses the exit
+        if cell_type == 'r' and (len(self.collected_goals) >= len(self.seen_goals) or turns_left < self.max_turns * 0.2):
             return 'U', self.create_message()
 
-        if cell_type.isdigit() and self.agent_a_goals_collected < self.total_goals_estimate:
+        if cell_type.isdigit() and current_cell not in self.collected_goals:
             return 'U', self.create_message()
 
         if cell_type in ('b', 'y', 'o', 'p') and self.should_use_teleport(turns_left, cell_type):
@@ -96,31 +96,36 @@ class AI:
         self.update_frontier(percepts)
         print(f"B received the message: {msg}")
 
-        # If exit is known and Agent A’s goals are collected, head directly to the exit
-        # next_move = self.move_toward(percepts, turns_left) if self.exit_found else self.find_next_move(percepts)
-
-        # Head directly to the exit if it’s known and all goals are collected by Agent A
-        if self.exit_found and self.agent_a_goals_collected >= self.total_goals_estimate:
-            next_move = self.move_toward(percepts)
+        # Heads directly to the exit if it’s known and all goals are collected by Agent A
+        if self.exit_found:
+            if len(self.collected_goals) >= len(self.seen_goals) or turns_left < self.max_turns * 0.3:
+                next_move = self.move_toward(percepts)
+            else:
+                # Waits around the exit if goals are not yet collected
+                next_move = self.find_next_move(percepts)
         else:
+            # Continues exploring to find the exit
             next_move = self.find_next_move(percepts)
 
-        if next_move:
+        if next_move and self.is_valid_move(next_move, percepts):
             self.update_position(next_move)
             return next_move, self.create_message()
 
         # Random fallback move, prioritizing different directions for diversity
         valid_moves = [d for d in ['E', 'W', 'N', 'S'] if percepts[d][0] != 'w']
-        return random.choice(valid_moves) if valid_moves else 'E'
+        return random.choice(valid_moves) if valid_moves else 'E', self.create_message()
 
     def detect_important_cells(self, percepts):
         # Focuses only on detecting teleports and exit
         for direction, data in percepts.items():
+            new_position = self.get_new_position(direction)
             if data[0] == 'r' and not self.exit_found:
                 self.exit_found = True
-                self.exit_position = self.get_new_position(direction)
+                self.exit_position = new_position
             elif data[0] in ('b', 'y', 'o', 'p'):  # Found teleport
-                self.teleports[data[0]] = self.get_new_position(direction)
+                self.teleports[data[0]] = new_position
+            elif data[0].isdigit() and new_position not in self.seen_goals:
+                self.seen_goals.add(new_position)
 
     def update_frontier(self, percepts):
 
@@ -144,15 +149,15 @@ class AI:
             'visited': self.visited,
             'exit_position': self.exit_position,
             'teleports': self.teleports,
-            'goals_collected': self.agent_a_goals_collected,  # Informs Agent A of goals collected
-            'total_goals_estimate': self.total_goals_estimate,  # Inform Agent A of the goal estimate
+            'new_goals': self.seen_goals - self.collected_goals,
+            'collected_goals': self.collected_goals,
         }
 
     def should_use_teleport(self, turns_left, teleport_type):
         # Avoids reusing the last teleport pair immediately to prevent teleport loops
         # but allows reuse if enough turns have passed since last use
         last_paired_teleport = self.teleport_pairs.get(self.last_teleport_used)
-        return (teleport_type != self.last_teleport_used or self.last_teleport_timer >= self.teleport_cooldown) and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.3 or len(self.frontier) > 10)
+        return (teleport_type != self.last_teleport_used or self.last_teleport_timer >= self.teleport_cooldown) and teleport_type != last_paired_teleport and (turns_left < self.max_turns * 0.5 or len(self.frontier) > 10)
 
     def find_next_move(self, percepts):
 
@@ -170,7 +175,9 @@ class AI:
         return random.choice(valid_moves) if valid_moves else 'E'
 
     def move_toward(self, percepts):
-        return self.a_star_search(self.position, [self.exit_position]) if self.exit_found else None
+        if self.exit_found:
+            return self.a_star_search(self.position, [self.exit_position])
+        return None
         """
         if self.exit_found and turns_left < self.max_turns * 0.2:
             return self.a_star_search(self.position, [self.exit_position])
@@ -215,6 +222,9 @@ class AI:
 
         return None  # No path was found
     
+    def is_valid_move(self, move, percepts):
+        return move in percepts and percepts[move][0] != 'w'
+
     # Backtracks to find the first step that the agent should take toward the target (frontier) cell
     def reconstruct_path(self, previous_location, current):
 
